@@ -7,37 +7,36 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from google import genai
 from google.genai import types
-from aiohttp import web
+
 
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-PORT = int(os.environ.get("PORT", 10000))  # Render даёт порт через PORT
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_INSTRUCTION = """
-Ты — эксперт по видеомаркетингу бренда MIXIT. Тебе присылают ролик блогера, снятый для продвижения бокса MIXIT (энзимная пудра, крем с витамином С, лимонница, свеча-лимон).
+Ты — эксперт по видеомаркетингу бренда MIXIT. Тебе присылают ролик блогера для продвижения бокса MIXIT (энзимная пудра, крем с витамином С, лимонница, свеча-лимон).
 
-Сначала внутри себя глубоко оцени видео по критериям:
-— Хук (первые 3 сек): есть ли крупный план кожи/результата, до/после, цепляющий текст на экране или сильная фраза? Долгое вступление, открывание двери, фраза «у меня нет проблем с кожей» — провальный хук.
-— Демонстрация товара: виден ли результат на коже, текстура продукта, до/после?
-— Темп и монтаж: нет ли затяжных скучных моментов, соответствует ли ритм энергии ролика?
-— Подача голосом: темп речи, энергетика, естественность, чёткость. Медленная вялая речь — проблема.
-— Текст на экране: обязателен. Статичный весь ролик или отсутствует — отметь.
-— Продающие элементы: обозначена ли проблема, виден ли результат, есть ли эмоция желания купить?
+Сначала внутри себя оцени видео по критериям:
+— Хук (первые 3 сек): крупный план кожи/результата, до/после, цепляющий текст или сильная фраза голосом? Долгое вступление, открывание двери, «у меня нет проблем с кожей» — слабый хук.
+— Демонстрация: виден ли результат на коже, текстура, до/после?
+— Темп: нет ли затяжных скучных моментов?
+— Озвучка: если она есть — оцени темп, энергетику, естественность. Если озвучки нет — не упоминай её, а вместо этого проверь достаточно ли текста на экране и понятно ли видео без звука.
+— Текст на экране: обязателен. Если его нет или он статичный — отметь.
+— Призыв: есть ли в конце призыв к действию голосом или текстом? Не упоминай артикул — только призыв найти продукт или перейти по ссылке.
 — Что можно в кадре: одежда/аксессуары с логотипами, декор, техника — ок. Косметика других брендов — нельзя.
 
-На выходе напиши ТОЛЬКО короткое сообщение, готовое отправить блогеру. Обращайся на «вы».
-Правила сообщения:
-— 1 короткий комплимент (что реально хорошо)
-— 3–4 конкретных правки, каждая в 1–2 предложения — называй проблему и сразу давай решение
-— Дружелюбно, как коллега, без жаргона и оценок по шкале
-— Финальная фраза тёплая и мотивирующая
-— Объём: 6–9 строк
+На выходе напиши ТОЛЬКО короткое сообщение блогеру. Обращайся на «вы».
+Правила:
+— 1 комплимент (1 предложение)
+— 2–3 конкретных правки, каждая в 1 предложение — проблема + решение
+— Тон дружелюбный, без жаргона
+— 1 тёплая финальная фраза
+— Максимум 5–6 строк. Никакой воды.
 Больше ничего не пиши — только само сообщение.
 """
 
@@ -174,30 +173,12 @@ async def handle_other(message: Message):
     await message.answer("Пришли мне видео или кружочек — я его разберу 🎬")
 
 
-async def handle_health_check(request):
-    return web.Response(text="Bot is active")
-
-
 async def main():
-    # Сбрасываем вебхук и удаляем очередь обновлений — на случай если осталась старая сессия
+    # Сбрасываем вебхук и удаляем очередь обновлений
     await bot.delete_webhook(drop_pending_updates=True)
+    logging.info("Бот запущен")
 
-    # Сначала поднимаем веб-сервер — Render ждёт порт в первые 5 минут
-    app = web.Application()
-    app.router.add_get("/", handle_health_check)
-    app.router.add_get("/health", handle_health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logging.info(f"Web server listening on port {PORT}")
-
-    # Запускаем polling параллельно с веб-сервером
-    polling_task = asyncio.create_task(
-        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    )
-
-    # Graceful shutdown на SIGTERM (Render посылает его при деплое/рестарте)
+    # Graceful shutdown на SIGTERM
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -208,6 +189,10 @@ async def main():
     loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
     loop.add_signal_handler(signal.SIGINT, handle_sigterm)
 
+    polling_task = asyncio.create_task(
+        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    )
+
     await stop_event.wait()
 
     polling_task.cancel()
@@ -216,7 +201,6 @@ async def main():
     except asyncio.CancelledError:
         pass
 
-    await runner.cleanup()
     logging.info("Бот остановлен")
 
 
