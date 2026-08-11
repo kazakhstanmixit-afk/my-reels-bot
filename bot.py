@@ -82,7 +82,7 @@ async def analyze_video(message: Message):
 
         response = await asyncio.to_thread(
             lambda: gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-3.6-flash",
                 contents=[
                     types.Part.from_uri(
                         file_uri=uploaded_gemini_file.uri,
