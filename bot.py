@@ -5,10 +5,10 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from google import genai
 from google.genai import types
+from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
 
-# Ключи берутся из настроек Render автоматически
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -33,7 +33,7 @@ async def cmd_start(message: Message):
     await message.answer(
         "Привет! 👋 Я AI-аудитор продающих Reels и Shorts.\n\n"
         "Пришли мне видео ролик или видеосообщение (кружочек), "
-        "и я даю разбор по хуку, пользе и чистоте кадра."
+        "и я дам разбор по хуку, пользе и чистоте кадра."
     )
 
 @dp.message(F.video | F.video_note)
@@ -45,13 +45,10 @@ async def handle_video(message: Message):
     local_file_path = f"temp_{file_id}.mp4"
     
     try:
-        # Скачиваем из Telegram
         file_info = await bot.get_file(file_id)
         await bot.download_file(file_info.file_path, local_file_path)
-        
         await status_msg.edit_text("🔍 ИИ смотрит видео и готовится к анализу...")
 
-        # Загружаем в Gemini
         uploaded_gemini_file = gemini_client.files.upload(file=local_file_path)
 
         while uploaded_gemini_file.state.name == "PROCESSING":
@@ -62,7 +59,6 @@ async def handle_video(message: Message):
             await status_msg.edit_text("❌ Ошибка при обработке видео.")
             return
 
-        # Анализируем
         response = gemini_client.models.generate_content(
             model='gemini-1.5-flash',
             contents=[
@@ -77,7 +73,6 @@ async def handle_video(message: Message):
 
         await status_msg.delete()
         await message.answer(response.text, parse_mode="Markdown")
-
         gemini_client.files.delete(name=uploaded_gemini_file.name)
 
     except Exception as e:
@@ -88,7 +83,19 @@ async def handle_video(message: Message):
         if os.path.exists(local_file_path):
             os.remove(local_file_path)
 
+# Крошечный сервер, чтобы Render считал приложение "Веб-сервисом"
+async def handle_health_check(request):
+    return web.Response(text="Bot is active")
+
 async def main():
+    app = web.Application()
+    app.router.add_get('/', handle_handle_check if 'handle_handle_check' in locals() else handle_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
