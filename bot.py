@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import signal
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -12,6 +13,7 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+PORT = int(os.environ.get("PORT", 10000))  # Render даёт порт через PORT
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
@@ -40,7 +42,6 @@ async def cmd_start(message: Message):
 
 
 async def analyze_video(message: Message):
-    """Общая логика для video и video_note."""
     status_msg = await message.answer("📥 Видео получено! Скачиваю файл...")
 
     video_obj = message.video or message.video_note
@@ -49,12 +50,10 @@ async def analyze_video(message: Message):
     uploaded_gemini_file = None
 
     try:
-        # Скачиваем файл
         file_info = await bot.get_file(file_id)
         await bot.download_file(file_info.file_path, destination=local_file_path)
         await status_msg.edit_text("🔍 Передаю видео в Gemini...")
 
-        # Загружаем в Gemini Files API
         uploaded_gemini_file = await asyncio.to_thread(
             lambda: gemini_client.files.upload(
                 file=local_file_path,
@@ -62,9 +61,8 @@ async def analyze_video(message: Message):
             )
         )
 
-        # Ждём обработки файла на стороне Gemini
         await status_msg.edit_text("⏳ Обрабатываю видео (может занять до минуты)...")
-        max_wait = 60  # секунд
+        max_wait = 60
         waited = 0
         while uploaded_gemini_file.state.name == "PROCESSING" and waited < max_wait:
             await asyncio.sleep(3)
@@ -102,7 +100,6 @@ async def analyze_video(message: Message):
         await status_msg.delete()
 
         text_response = response.text
-        # Разбиваем длинный ответ на части по 4000 символов
         chunks = [text_response[i:i + 4000] for i in range(0, len(text_response), 4000)]
         for chunk in chunks:
             await message.answer(chunk, parse_mode="Markdown")
@@ -118,7 +115,6 @@ async def analyze_video(message: Message):
             pass
 
     finally:
-        # Удаляем файл из Gemini
         if uploaded_gemini_file:
             try:
                 await asyncio.to_thread(
@@ -126,7 +122,6 @@ async def analyze_video(message: Message):
                 )
             except Exception:
                 pass
-        # Удаляем локальный файл
         if os.path.exists(local_file_path):
             os.remove(local_file_path)
 
@@ -143,31 +138,50 @@ async def handle_video_note(message: Message):
 
 @dp.message()
 async def handle_other(message: Message):
-    await message.answer(
-        "Пришли мне видео или кружочек — я его разберу 🎬"
-    )
+    await message.answer("Пришли мне видео или кружочек — я его разберу 🎬")
 
 
-# Health check для хостинга (Render, Railway и т.д.)
 async def handle_health_check(request):
     return web.Response(text="Bot is active")
 
 
-async def start_web_server():
+async def main():
+    # Сначала поднимаем веб-сервер — Render ждёт порт в первые 5 минут
     app = web.Application()
     app.router.add_get("/", handle_health_check)
+    app.router.add_get("/health", handle_health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logging.info(f"Web server started on port {port}")
+    logging.info(f"Web server listening on port {PORT}")
 
+    # Запускаем polling параллельно с веб-сервером
+    polling_task = asyncio.create_task(
+        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    )
 
-async def main():
-    await start_web_server()
-    logging.info("Bot started polling...")
-    await dp.start_polling(bot)
+    # Graceful shutdown на SIGTERM (Render посылает его при деплое/рестарте)
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def handle_sigterm():
+        logging.info("SIGTERM получен, завершаю работу...")
+        stop_event.set()
+
+    loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
+    loop.add_signal_handler(signal.SIGINT, handle_sigterm)
+
+    await stop_event.wait()
+
+    polling_task.cancel()
+    try:
+        await polling_task
+    except asyncio.CancelledError:
+        pass
+
+    await runner.cleanup()
+    logging.info("Бот остановлен")
 
 
 if __name__ == "__main__":
