@@ -66,7 +66,7 @@ async def handle_video(message: Message):
 
         # Запрос к генеративной модели
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-flash',
             contents=[
                 uploaded_gemini_file,
                 "Проанализируй этот продающий ролик с акцентом на хук, пользу и чистоту кадра без чужих брендов."
