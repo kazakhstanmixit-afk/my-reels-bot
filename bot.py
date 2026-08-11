@@ -7,10 +7,8 @@ from google import genai
 from google.genai import types
 from aiohttp import web
 
-# Настройка логов
 logging.basicConfig(level=logging.INFO)
 
-# Получение ключей из переменных окружения
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -30,6 +28,19 @@ SYSTEM_INSTRUCTION = """
 - ✅ **Чек-лист правок:** 3-5 конкретных шагов (что вырезать / переснять / доработать).
 """
 
+def get_active_flash_model():
+    """Динамический поиск доступной Flash-модели для API-ключа"""
+    try:
+        models = gemini_client.models.list()
+        for m in models:
+            # Ищем любую модель, у которой в имени есть 'flash' и которая поддерживает generateContent
+            if 'flash' in m.name.lower() and 'generateContent' in getattr(m, 'supported_generation_methods', []):
+                return m.name
+    except Exception as e:
+        logging.warning(f"Не удалось получить список моделей: {e}")
+    # Запасной дефолт
+    return "gemini-1.5-flash"
+
 @dp.message(F.command_start)
 async def cmd_start(message: Message):
     await message.answer(
@@ -47,15 +58,12 @@ async def handle_video(message: Message):
     local_file_path = f"temp_{file_id}.mp4"
     
     try:
-        # Скачиваем файл
         file_info = await bot.get_file(file_id)
         await bot.download_file(file_info.file_path, local_file_path)
         await status_msg.edit_text("🔍 ИИ смотрит видео и готовится к анализу...")
 
-        # Загружаем в Gemini API
         uploaded_gemini_file = gemini_client.files.upload(file=local_file_path)
 
-        # Ждем завершения обработки на стороне Google
         while uploaded_gemini_file.state.name == "PROCESSING":
             await asyncio.sleep(2)
             uploaded_gemini_file = gemini_client.files.get(name=uploaded_gemini_file.name)
@@ -64,9 +72,12 @@ async def handle_video(message: Message):
             await status_msg.edit_text("❌ Ошибка при обработке видео.")
             return
 
-        # Запрос к генеративной модели
+        # Автоматическое определение имени модели
+        target_model = get_active_flash_model()
+        logging.info(f"Используем модель: {target_model}")
+
         response = gemini_client.models.generate_content(
-            model='gemini-flash',
+            model=target_model,
             contents=[
                 uploaded_gemini_file,
                 "Проанализируй этот продающий ролик с акцентом на хук, пользу и чистоту кадра без чужих брендов."
@@ -79,7 +90,6 @@ async def handle_video(message: Message):
 
         await status_msg.delete()
 
-        # Отправка ответа пользователю (с обрезкой, если текст превышает лимит Telegram)
         text_response = response.text
         if len(text_response) > 4000:
             for chunk in [text_response[i:i+4000] for i in range(0, len(text_response), 4000)]:
@@ -87,7 +97,6 @@ async def handle_video(message: Message):
         else:
             await message.answer(text_response, parse_mode="Markdown")
 
-        # Удаление файла с серверов Gemini
         gemini_client.files.delete(name=uploaded_gemini_file.name)
 
     except Exception as e:
@@ -95,11 +104,9 @@ async def handle_video(message: Message):
         await status_msg.edit_text(f"⚠️ Произошла ошибка: {str(e)}")
 
     finally:
-        # Удаление временного локального файла
         if os.path.exists(local_file_path):
             os.remove(local_file_path)
 
-# Веб-сервер для поддержки бесплатного тарифа Render (Web Service)
 async def handle_health_check(request):
     return web.Response(text="Bot is active")
 
@@ -113,7 +120,6 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    # Запуск бота в режиме опроса Telegram
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
