@@ -3,7 +3,8 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
@@ -11,11 +12,9 @@ logging.basicConfig(level=logging.INFO)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Настройка ключа Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_INSTRUCTION = """
 Ты — эксперт по короткому продающему видеоконтенту (Reels, TikTok, Shorts).
@@ -29,12 +28,6 @@ SYSTEM_INSTRUCTION = """
 - ✅ **Чек-лист правок:** 3-5 конкретных шагов (что вырезать / переснять / доработать).
 """
 
-# Используем модель gemini-1.5-flash с системными инструкциями
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction=SYSTEM_INSTRUCTION
-)
-
 @dp.message(F.command_start)
 async def cmd_start(message: Message):
     await message.answer(
@@ -45,40 +38,49 @@ async def cmd_start(message: Message):
 
 @dp.message(F.video | F.video_note)
 async def handle_video(message: Message):
-    status_msg = await message.answer("📥 Видео получено! Загружаю в ИИ...")
+    status_msg = await message.answer("📥 Видео получено! Скачиваю файл...")
     
     video_obj = message.video or message.video_note
     file_id = video_obj.file_id
     local_file_path = f"temp_{file_id}.mp4"
-    uploaded_file = None
+    uploaded_gemini_file = None
     
     try:
-        # 1. Скачиваем видео из Telegram
         file_info = await bot.get_file(file_id)
         await bot.download_file(file_info.file_path, local_file_path)
-        await status_msg.edit_text("🔍 ИИ смотрит видео и готовится к анализу...")
+        await status_msg.edit_text("🔍 Передаю видео в Gemini...")
 
-        # 2. Загружаем файл в Google Gemini (асинхронно в отдельном потоке)
-        uploaded_file = await asyncio.to_thread(genai.upload_file, local_file_path)
+        uploaded_gemini_file = await asyncio.to_thread(
+            gemini_client.files.upload, file=local_file_path
+        )
 
-        # 3. Ждем, пока Google обработает видео
-        while uploaded_file.state.name == "PROCESSING":
+        while uploaded_gemini_file.state.name == "PROCESSING":
             await asyncio.sleep(2)
-            uploaded_file = await asyncio.to_thread(genai.get_file, uploaded_file.name)
+            uploaded_gemini_file = await asyncio.to_thread(
+                gemini_client.files.get, name=uploaded_gemini_file.name
+            )
 
-        if uploaded_file.state.name == "FAILED":
-            await status_msg.edit_text("❌ Ошибка при обработке видео со стороны Google.")
+        if uploaded_gemini_file.state.name == "FAILED":
+            await status_msg.edit_text("❌ Ошибка при обработке видео.")
             return
 
-        # 4. Генерируем разбор
+        await status_msg.edit_text("🧠 Формирую разбор...")
+
         response = await asyncio.to_thread(
-            model.generate_content,
-            [uploaded_file, "Проанализируй этот продающий ролик с акцентом на хук, пользу и чистоту кадра без чужих брендов."]
+            gemini_client.models.generate_content,
+            model='gemini-2.5-flash',
+            contents=[
+                uploaded_gemini_file,
+                "Проанализируй этот продающий ролик с акцентом на хук, пользу и чистоту кадра без чужих брендов."
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.2
+            )
         )
 
         await status_msg.delete()
 
-        # 5. Отправляем ответ
         text_response = response.text
         if len(text_response) > 4000:
             for chunk in [text_response[i:i+4000] for i in range(0, len(text_response), 4000)]:
@@ -87,14 +89,13 @@ async def handle_video(message: Message):
             await message.answer(text_response, parse_mode="Markdown")
 
     except Exception as e:
-        logging.error(f"Ошибка: {e}")
-        await status_msg.edit_text(f"⚠️ Произошла ошибка: {str(e)}")
+        logging.error(f"Ошибка в боте: {e}", exc_info=True)
+        await status_msg.edit_text(f"⚠️ Ошибка при обработке: `{str(e)}`", parse_mode="Markdown")
 
     finally:
-        # Удаляем временные файлы
-        if uploaded_file:
+        if uploaded_gemini_file:
             try:
-                await asyncio.to_thread(genai.delete_file, uploaded_file.name)
+                await asyncio.to_thread(gemini_client.files.delete, name=uploaded_gemini_file.name)
             except Exception:
                 pass
         if os.path.exists(local_file_path):
