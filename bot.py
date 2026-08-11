@@ -65,9 +65,7 @@ async def analyze_video(message: Message):
         file_size = getattr(video_obj, "file_size", None)
         if file_size and file_size > 20 * 1024 * 1024:
             await status_msg.edit_text(
-                "⚠️ Видео слишком большое (больше 20 МБ).
-"
-                "Сожмите его или обрежьте до 60 секунд и пришлите снова."
+                "⚠️ Видео слишком большое (больше 20 МБ).\nСожмите его или обрежьте до 60 секунд и пришлите снова."
             )
             return
 
