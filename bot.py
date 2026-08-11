@@ -20,15 +20,25 @@ dp = Dispatcher()
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_INSTRUCTION = """
-Ты — эксперт по короткому продающему видеоконтенту (Reels, TikTok, Shorts).
-Твоя задача — проанализировать видео и дать конструктивный аудит.
+Ты — куратор контента бренда MIXIT. Смотришь ролик блогера и пишешь ему короткую обратную связь — вежливо, на «вы», тепло и бережно.
 
-Формат ответа в Markdown:
-- 🎯 **Оценка Хука (1-10):** что исправить в первые 2–3 секунды для захвата внимания.
-- 🧹 **Чистота кадра:** нет ли сторонних брендов, лишних предметов и визуального шума.
-- 💡 **Смысл и Польза:** понятно ли, в чем выгода и ценность продукта для клиента.
-- 🎬 **Динамика и CTA:** оценка монтажа, звука, текста на экране и призыва к действию.
-- ✅ **Чек-лист правок:** 3-5 конкретных шагов (что вырезать / переснять / доработать).
+Видео снято для продвижения эксклюзивного бокса MIXIT (энзимная пудра, крем с витамином С, лимонница, свеча-лимон). Цель — передать атмосферу уюта и цитрусового заряда, вызвать желание купить набор.
+
+По этому ТЗ проверь видео и напиши разбор (максимум 130 слов):
+
+1. Один искренний комплимент — что реально получилось хорошо.
+
+2. 2-3 конкретных наблюдения с эмодзи — только по тому, что видишь в ролике:
+
+ХУК: Начинается ли видео с результата на коже, до/после или цепляющего текста на экране? Если нет — мягко предложи один из вариантов: крупный план сияющей кожи, быстрый переход до/после, или текст вроде «Тусклая кожа, пятна, поры — решила всё одним набором».
+
+СОДЕРЖАНИЕ: Показана ли текстура пудры и как она пенится? Виден ли финиш крема на коже? Если чего-то не хватает — скажи что было бы здорово добавить.
+
+АТМОСФЕРА: Передаётся ли ощущение уюта и свежести? Хочется ли досмотреть до конца?
+
+3. Одна мотивирующая фраза.
+
+Пиши живо и тепло, никакой критики в лоб, никаких технических терминов.
 """
 
 
@@ -50,16 +60,24 @@ async def analyze_video(message: Message):
     uploaded_gemini_file = None
 
     try:
+        # Проверяем размер файла (Telegram Bot API лимит — 20 МБ)
+        file_size = getattr(video_obj, "file_size", None)
+        if file_size and file_size > 20 * 1024 * 1024:
+            await status_msg.edit_text(
+                "⚠️ Видео слишком большое (больше 20 МБ).
+"
+                "Сожмите его или обрежьте до 60 секунд и пришлите снова."
+            )
+            return
+
         file_info = await bot.get_file(file_id)
         await bot.download_file(file_info.file_path, destination=local_file_path)
         await status_msg.edit_text("🔍 Передаю видео в Gemini...")
 
-        uploaded_gemini_file = await asyncio.to_thread(
-            lambda: gemini_client.files.upload(
-                file=local_file_path,
-                config={"mime_type": "video/mp4"}
-            )
-        )
+        def do_upload():
+            return gemini_client.files.upload(file=local_file_path)
+
+        uploaded_gemini_file = await asyncio.to_thread(do_upload)
 
         await status_msg.edit_text("⏳ Обрабатываю видео (может занять до минуты)...")
         max_wait = 60
@@ -67,9 +85,10 @@ async def analyze_video(message: Message):
         while uploaded_gemini_file.state.name == "PROCESSING" and waited < max_wait:
             await asyncio.sleep(3)
             waited += 3
-            uploaded_gemini_file = await asyncio.to_thread(
-                lambda: gemini_client.files.get(name=uploaded_gemini_file.name)
-            )
+            file_name = uploaded_gemini_file.name
+            def do_get(name=file_name):
+                return gemini_client.files.get(name=name)
+            uploaded_gemini_file = await asyncio.to_thread(do_get)
 
         if uploaded_gemini_file.state.name != "ACTIVE":
             await status_msg.edit_text(
@@ -83,12 +102,13 @@ async def analyze_video(message: Message):
         response = None
         for attempt in range(5):
             try:
-                response = await asyncio.to_thread(
-                    lambda: gemini_client.models.generate_content(
+                file_uri = uploaded_gemini_file.uri
+                def do_generate(uri=file_uri):
+                    return gemini_client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
                             types.Part.from_uri(
-                                file_uri=uploaded_gemini_file.uri,
+                                file_uri=uri,
                                 mime_type="video/mp4"
                             ),
                             "Проанализируй этот продающий ролик с акцентом на хук, пользу и чистоту кадра без чужих брендов."
@@ -98,9 +118,10 @@ async def analyze_video(message: Message):
                             temperature=0.2
                         )
                     )
-                )
+                response = await asyncio.to_thread(do_generate)
                 break
             except Exception as e:
+                logging.error(f"Попытка {attempt+1} не удалась: {e}")
                 if "503" in str(e) or "UNAVAILABLE" in str(e):
                     if attempt < 4:
                         wait = (attempt + 1) * 10
@@ -160,6 +181,9 @@ async def handle_health_check(request):
 
 
 async def main():
+    # Сбрасываем вебхук и удаляем очередь обновлений — на случай если осталась старая сессия
+    await bot.delete_webhook(drop_pending_updates=True)
+
     # Сначала поднимаем веб-сервер — Render ждёт порт в первые 5 минут
     app = web.Application()
     app.router.add_get("/", handle_health_check)
