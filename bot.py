@@ -80,22 +80,36 @@ async def analyze_video(message: Message):
 
         await status_msg.edit_text("🧠 Формирую разбор...")
 
-        response = await asyncio.to_thread(
-            lambda: gemini_client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=[
-                    types.Part.from_uri(
-                        file_uri=uploaded_gemini_file.uri,
-                        mime_type="video/mp4"
-                    ),
-                    "Проанализируй этот продающий ролик с акцентом на хук, пользу и чистоту кадра без чужих брендов."
-                ],
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.2
+        response = None
+        for attempt in range(5):
+            try:
+                response = await asyncio.to_thread(
+                    lambda: gemini_client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=[
+                            types.Part.from_uri(
+                                file_uri=uploaded_gemini_file.uri,
+                                mime_type="video/mp4"
+                            ),
+                            "Проанализируй этот продающий ролик с акцентом на хук, пользу и чистоту кадра без чужих брендов."
+                        ],
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_INSTRUCTION,
+                            temperature=0.2
+                        )
+                    )
                 )
-            )
-        )
+                break
+            except Exception as e:
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    if attempt < 4:
+                        wait = (attempt + 1) * 10
+                        await status_msg.edit_text(f"⏳ Gemini перегружен, повторяю через {wait} сек... (попытка {attempt + 1}/5)")
+                        await asyncio.sleep(wait)
+                    else:
+                        raise Exception("Гемини перегружен, попробуй отправить видео ещё раз через пару минут.")
+                else:
+                    raise
 
         await status_msg.delete()
 
