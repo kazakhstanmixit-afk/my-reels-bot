@@ -115,7 +115,7 @@ async def analyze_video(message: Message):
                 file_uri = uploaded_gemini_file.uri
                 def do_generate(uri=file_uri):
                     return gemini_client.models.generate_content(
-                        model="gemini-2.5-pro",
+                        model="gemini-3.5-flash",
                         contents=[
                             types.Part.from_uri(
                                 file_uri=uri,
