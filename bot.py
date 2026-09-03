@@ -5,6 +5,7 @@ import signal
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.client.session.aiohttp import AiohttpSession
 from google import genai
 from google.genai import types
 
@@ -13,51 +14,52 @@ logging.basicConfig(level=logging.INFO)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
+session = AiohttpSession(timeout=120)
+bot = Bot(token=TELEGRAM_BOT_TOKEN, session=session)
 dp = Dispatcher()
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_INSTRUCTION = """
-Ty - strogiy ekspert po videomarketingu brenda MIXIT. Tebe prisylayut rolik blogera s produktom MIXIT.
+Ты — строгий эксперт по видеомаркетингу бренда MIXIT. Тебе присылают ролик блогера с продуктом MIXIT.
 
-Snachala vnutri sebya sprosi: "Esli by ya listal lentu - ostanovilsya by? Dosmotrel? Zaxotel kupit?" Analiziruy zhestko vnutri, pishi myagko snaruzhi.
+Сначала внутри себя спроси: "Если бы я листал ленту — остановился бы? Досмотрел? Захотел купить?" Анализируй жёстко внутри, пиши мягко снаружи.
 
-OCENI PO KRITERIYAM:
+ОЦЕНИ ПО КРИТЕРИЯМ:
 
-XUK (pervye 3 sek): est li vizualnyy zaxvat + tekst na ekrane? Vzglyad v kameru, neytral'noe nachalo, dolgoe vstuplenie - poteryannye prosmotryi. Esli slabiy - predlozhi konkretnuyu zamenu: nachat s krupnogo plana rezultata na kozhe/volosax + tsepyayushchiy tekst.
+ХУК (первые 3 сек): есть ли визуальный захват и текст на экране? Взгляд в камеру, нейтральное начало, долгое вступление — потерянные просмотры. Если слабый — предложи конкретную замену: начать с крупного плана результата на коже/волосах и цепляющий текст. Хук не обязательно слово в слово по шаблону — главное чтобы цеплял.
 
-REZULTAT (zheleznoe pravilo): do/posle ili chetkiy effekt na kozhe/volosax - OBYAZATELNO. Siyaniye, blesk, tekstura, chistota krupnym planom. Net - eto glavnaya pravka nomer odin.
+РЕЗУЛЬТАТ (железное правило): до/после или чёткий эффект на коже/волосах — ОБЯЗАТЕЛЬНО. Сияние, блеск, текстура, чистота крупным планом. Нет — это главная правка номер один.
 
-DINAMIKA: video dolzhno byt dinamichnym, bez zatyazhek. Statichnyy kadr dolshe 3 sek, medlennoe naneseniye, dolgiye pauzy - nazyvay konkretno. Banki v kadre bolshe 3 sek - vybroshennoe vremya. Poryadok blokov ne obyazatelen - glavnoe chtoby bylo dinamichno i ne zatyanutyy.
+ДИНАМИКА: видео должно быть динамичным, без затяжек. Статичный кадр дольше 3 сек, медленное нанесение, долгие паузы — называй конкретно. Банки в кадре больше 3 сек — выброшенное время. Порядок блоков не обязателен — главное чтобы было динамично и не затянуто.
 
-OZVU4KA: esli est - temp, energetika, estestvennost. Medlennaya/vyalaya rech - skazhi pryamo. Esli net - dostatochno li teksta na ekrane.
+ОЗВУЧКА: если есть — темп, энергетика, естественность. Медленная/вялая речь — скажи прямо. Если нет — достаточно ли текста на экране.
 
-TEKST NA EKRANE: obyazatelen. Melkiy/statichnyy/otsutstvuet - otmet.
+ТЕКСТ НА ЭКРАНЕ: обязателен. Мелкий/статичный/отсутствует — отметь.
 
-CTA: obyazatelno v konce - golosom ili tekstom: "Zakazala na Kaspi, artikul ostavila v opisanii" ili "Nashla na Kaspi, artikul nizhe". Esli CTA drugoy ili net - obyazatelnaya pravka.
+CTA: обязательно в конце — голосом или текстом: "Заказала на Kaspi, артикул оставила в описании" или "Нашла на Kaspi, артикул ниже". Если CTA другой или нет — обязательная правка.
 
-CHTO MOZHNO V KADRE: odezhda/aksessuary s logotipami, dekor, texnika - ok. Kosmetika drugix brendov - nelzya.
+ЧТО МОЖНО В КАДРЕ: одежда/аксессуары с логотипами, декор, техника — ок. Косметика других брендов — нельзя.
 
-Na vyxode napishi TOLKO gotovoe soobshcheniye blogeru. Obrashchaysya na "vy".
-- 1 kompliment (tolko esli realno est za chto)
-- "Vot chto stoit dorabotat:"
-- 4-5 pravok: chto vidish v kadre + pochemu slabo + kak ispravit konkretno
-- Ton teplyy, bez zhargona, bez slova "problema"
-- 1 finalnaya fraza - zhdesh novuyu versiyu
-- 10-12 strok. Emko.
+На выходе напиши ТОЛЬКО готовое сообщение блогеру. Обращайся на "вы".
+- 1 комплимент (только если реально есть за что)
+- "Вот что стоит доработать:"
+- 4-5 правок: что видишь в кадре + почему слабо + как исправить конкретно
+- Тон тёплый, без жаргона, без слова "проблема"
+- 1 финальная фраза — ждёшь новую версию
+- 10-12 строк. Ёмко.
 """
 
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
-        "Privet! Ya AI-auditor prodayushchikh Reels i Shorts MIXIT.\n\n"
-        "Prishli mne video ili kruglyy video i ya dam razbor."
+        "Привет! Я AI-аудитор продающих Reels и Shorts MIXIT.\n\n"
+        "Пришли мне видео или кружочек и я дам разбор."
     )
 
 
 async def analyze_video(message: Message):
-    status_msg = await message.answer("Video polucheno! Skachivayu fayl...")
+    status_msg = await message.answer("Видео получено! Скачиваю файл...")
 
     video_obj = message.video or message.video_note
     file_id = video_obj.file_id
@@ -68,21 +70,21 @@ async def analyze_video(message: Message):
         file_size = getattr(video_obj, "file_size", None)
         if file_size and file_size > 20 * 1024 * 1024:
             await status_msg.edit_text(
-                "Video slishkom bolshoe (bolshe 20 MB).\n"
-                "Szhmite ego ili obrezhe do 60 sekund i prishlite snova."
+                "Видео слишком большое (больше 20 МБ).\n"
+                "Сожмите его или обрежьте до 60 секунд и пришлите снова."
             )
             return
 
-        file_info = await bot.get_file(file_id)
+        file_info = await bot.get_file(file_id, request_timeout=120)
         await bot.download_file(file_info.file_path, destination=local_file_path)
-        await status_msg.edit_text("Peredayu video v Gemini...")
+        await status_msg.edit_text("Передаю видео в Gemini...")
 
         def do_upload():
             return gemini_client.files.upload(file=local_file_path)
 
         uploaded_gemini_file = await asyncio.to_thread(do_upload)
 
-        await status_msg.edit_text("Obrabatyvayu video (mozhet zanyat do minuty)...")
+        await status_msg.edit_text("Обрабатываю видео (может занять до минуты)...")
         max_wait = 60
         waited = 0
         while uploaded_gemini_file.state.name == "PROCESSING" and waited < max_wait:
@@ -95,12 +97,12 @@ async def analyze_video(message: Message):
 
         if uploaded_gemini_file.state.name != "ACTIVE":
             await status_msg.edit_text(
-                f"Gemini ne smog obrabotat video (status: {uploaded_gemini_file.state.name}).\n"
-                "Poprobuy drugoy fayl ili umenshy ego razmer."
+                f"Gemini не смог обработать видео (статус: {uploaded_gemini_file.state.name}).\n"
+                "Попробуй другой файл или уменьши его размер."
             )
             return
 
-        await status_msg.edit_text("Formiruyu razbor...")
+        await status_msg.edit_text("Формирую разбор...")
 
         response = None
         for attempt in range(5):
@@ -114,7 +116,7 @@ async def analyze_video(message: Message):
                                 file_uri=uri,
                                 mime_type="video/mp4"
                             ),
-                            "Proanaliziruy etot rolik."
+                            "Проанализируй этот ролик."
                         ],
                         config=types.GenerateContentConfig(
                             system_instruction=SYSTEM_INSTRUCTION,
@@ -124,14 +126,14 @@ async def analyze_video(message: Message):
                 response = await asyncio.to_thread(do_generate)
                 break
             except Exception as e:
-                logging.error(f"Popytka {attempt+1}: {e}")
+                logging.error(f"Попытка {attempt+1}: {e}")
                 if "503" in str(e) or "UNAVAILABLE" in str(e):
                     if attempt < 4:
                         wait = (attempt + 1) * 10
-                        await status_msg.edit_text(f"Gemini peregruzhen, povtoryayu cherez {wait} sek... (popytka {attempt+1}/5)")
+                        await status_msg.edit_text(f"Gemini перегружен, повторяю через {wait} сек... (попытка {attempt+1}/5)")
                         await asyncio.sleep(wait)
                     else:
-                        raise Exception("Gemini peregruzhen, poprobuy cherez neskolko minut.")
+                        raise Exception("Gemini перегружен, попробуй через несколько минут.")
                 else:
                     raise
 
@@ -143,9 +145,9 @@ async def analyze_video(message: Message):
             await message.answer(chunk, parse_mode="Markdown")
 
     except Exception as e:
-        logging.error(f"Oshibka: {e}", exc_info=True)
+        logging.error(f"Ошибка: {e}", exc_info=True)
         try:
-            await status_msg.edit_text(f"Chto-to poshlo ne tak:\n`{str(e)[:500]}`", parse_mode="Markdown")
+            await status_msg.edit_text(f"Что-то пошло не так:\n`{str(e)[:500]}`", parse_mode="Markdown")
         except Exception:
             pass
 
@@ -171,12 +173,12 @@ async def handle_video_note(message: Message):
 
 @dp.message()
 async def handle_other(message: Message):
-    await message.answer("Prishli mne video ili kruglyy - ya ego razberu.")
+    await message.answer("Пришлите мне видео или кружочек — я его разберу.")
 
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Bot zapushchen")
+    logging.info("Бот запущен")
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
