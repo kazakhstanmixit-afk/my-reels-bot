@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-session = AiohttpSession(timeout=120)
+session = AiohttpSession(timeout=180)
 bot = Bot(token=TELEGRAM_BOT_TOKEN, session=session)
 dp = Dispatcher()
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -203,8 +203,8 @@ async def analyze_video(message: Message):
 
         uploaded_gemini_file = await asyncio.to_thread(do_upload)
 
-        await status_msg.edit_text("Обрабатываю видео (может занять до минуты)...")
-        max_wait = 60
+        await status_msg.edit_text("Обрабатываю видео (может занять до 2 минут)...")
+        max_wait = 120
         waited = 0
         while uploaded_gemini_file.state.name == "PROCESSING" and waited < max_wait:
             await asyncio.sleep(3)
@@ -232,7 +232,7 @@ async def analyze_video(message: Message):
 
                 def do_generate(uri=file_uri):
                     return gemini_client.models.generate_content(
-                        model="gemini-3.5-flash",
+                        model="gemini-3.6-flash",
                         contents=[
                             types.Part.from_uri(
                                 file_uri=uri,
